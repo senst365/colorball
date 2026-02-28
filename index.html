@@ -1,0 +1,774 @@
+import React, { useState, useEffect } from 'react';
+
+// 可愛風格顏色設定
+const COLORS = {
+  red: { bg: 'from-red-400 to-red-500', solid: 'bg-red-400', border: 'border-red-600', shadow: 'shadow-red-500/50' },
+  yellow: { bg: 'from-yellow-300 to-yellow-400', solid: 'bg-yellow-300', border: 'border-yellow-500', shadow: 'shadow-yellow-500/50' },
+  green: { bg: 'from-green-400 to-green-500', solid: 'bg-green-400', border: 'border-green-600', shadow: 'shadow-green-500/50' }
+};
+
+const TARGETS = ['red', 'yellow', 'green'];
+
+// --- 核心邏輯：保證 100% 可解的題目產生器 ---
+const generateSolvablePuzzle = () => {
+  let pos = [0, 1, 2]; 
+  for (let i = 0; i < 3; i++) {
+    const swapIdx = Math.random() > 0.5 ? 0 : 1; 
+    const temp = pos[swapIdx];
+    pos[swapIdx] = pos[swapIdx + 1];
+    pos[swapIdx + 1] = temp;
+  }
+  return [TARGETS[pos[0]], TARGETS[pos[1]], TARGETS[pos[2]]];
+};
+
+// --- 音效引擎 (Web Audio API) ---
+let audioCtx = null;
+const playTone = (freqs, type, duration, vol = 0.1) => {
+  if (!window.AudioContext && !window.webkitAudioContext) return;
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+
+  const startTime = audioCtx.currentTime;
+  freqs.forEach((freq, i) => {
+    const osc = audioCtx.createOscillator();
+    const gainNode = audioCtx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, startTime + i * duration);
+    gainNode.gain.setValueAtTime(vol, startTime + i * duration);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, startTime + (i + 1) * duration);
+    osc.connect(gainNode);
+    gainNode.connect(audioCtx.destination);
+    osc.start(startTime + i * duration);
+    osc.stop(startTime + (i + 1) * duration);
+  });
+};
+
+const sfx = {
+  place: () => playTone([800], 'sine', 0.1, 0.2),
+  pickup: () => playTone([600], 'sine', 0.08, 0.15),
+  lever: () => playTone([150, 120, 100], 'square', 0.1, 0.1),
+  win: () => playTone([523.25, 659.25, 783.99, 1046.50], 'sine', 0.15, 0.2),
+  lose: () => playTone([440, 415.30, 392.00, 369.99], 'sawtooth', 0.2, 0.1),
+  timeout: () => playTone([150, 150], 'sawtooth', 0.3, 0.2)
+};
+
+// --- SVG 繪圖元件 (玩具質感水管) ---
+const StraightPipe = () => (
+  <svg width="100%" height="100%" viewBox="0 0 100 100" preserveAspectRatio="none" className="drop-shadow-md pointer-events-none">
+    <defs>
+      <linearGradient id="straightPipe" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stopColor="#38bdf8" />
+        <stop offset="50%" stopColor="#7dd3fc" />
+        <stop offset="100%" stopColor="#0284c7" />
+      </linearGradient>
+    </defs>
+    <rect x="35" y="0" width="30" height="100" fill="url(#straightPipe)" stroke="#0284c7" strokeWidth="2" />
+    <rect x="30" y="0" width="40" height="15" rx="4" fill="#0ea5e9" stroke="#0284c7" strokeWidth="2" />
+    <rect x="30" y="85" width="40" height="15" rx="4" fill="#0ea5e9" stroke="#0284c7" strokeWidth="2" />
+  </svg>
+);
+
+const CrossPipe = () => (
+  <svg viewBox="0 0 200 100" preserveAspectRatio="none" className="drop-shadow-lg overflow-visible absolute top-0 left-0 h-full w-[200%] pointer-events-none z-20">
+    <defs>
+      <linearGradient id="pipePink" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stopColor="#f472b6" />
+        <stop offset="50%" stopColor="#fbcfe8" />
+        <stop offset="100%" stopColor="#db2777" />
+      </linearGradient>
+      <linearGradient id="pipeOrange" x1="0%" y1="0%" x2="100%" y2="0%">
+        <stop offset="0%" stopColor="#fb923c" />
+        <stop offset="50%" stopColor="#fed7aa" />
+        <stop offset="100%" stopColor="#ea580c" />
+      </linearGradient>
+    </defs>
+    <path d="M 150 0 C 150 50, 50 50, 50 100" fill="none" stroke="#9a3412" strokeWidth="34" strokeLinecap="square" />
+    <path d="M 150 0 C 150 50, 50 50, 50 100" fill="none" stroke="url(#pipeOrange)" strokeWidth="28" strokeLinecap="square" />
+    <rect x="130" y="0" width="40" height="15" rx="4" fill="#f97316" stroke="#9a3412" strokeWidth="2" />
+    <rect x="30" y="85" width="40" height="15" rx="4" fill="#f97316" stroke="#9a3412" strokeWidth="2" />
+    <path d="M 50 0 C 50 50, 150 50, 150 100" fill="none" stroke="#9d174d" strokeWidth="34" strokeLinecap="square" />
+    <path d="M 50 0 C 50 50, 150 50, 150 100" fill="none" stroke="url(#pipePink)" strokeWidth="28" strokeLinecap="square" />
+    <rect x="30" y="0" width="40" height="15" rx="4" fill="#ec4899" stroke="#9d174d" strokeWidth="2" />
+    <rect x="130" y="85" width="40" height="15" rx="4" fill="#ec4899" stroke="#9d174d" strokeWidth="2" />
+  </svg>
+);
+
+export default function App() {
+  const [topBalls, setTopBalls] = useState([]);
+  const [grid, setGrid] = useState(Array(3).fill().map(() => Array(3).fill(null)));
+  const [tool, setTool] = useState('cross');
+  const [inventory, setInventory] = useState({ cross: 3, straight: 3 });
+  
+  const [animState, setAnimState] = useState('idle'); 
+  const [animStep, setAnimStep] = useState(0); 
+  const [paths, setPaths] = useState([]);
+  
+  const [hoverCell, setHoverCell] = useState(null);
+  const [draggingPipe, setDraggingPipe] = useState(null);
+
+  const [showSettings, setShowSettings] = useState(false);
+  const [timeSetting, setTimeSetting] = useState(60); 
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  const [isTimedMode, setIsTimedMode] = useState(false);
+  const [timeLeft, setTimeLeft] = useState(60);
+  const [timerRunning, setTimerRunning] = useState(false);
+  const [score, setScore] = useState(0);
+
+  const isWaitingToStart = isTimedMode && !timerRunning && score === 0 && animState === 'idle' && timeLeft === timeSetting;
+
+  const startSession = () => {
+    setScore(0);
+    setTimeLeft(timeSetting);
+    generateLevel(true); 
+  };
+
+  const generateLevel = (forceResetTimer = false) => {
+    setTopBalls(generateSolvablePuzzle()); 
+    setGrid(Array(3).fill().map(() => Array(3).fill(null)));
+    setInventory({ cross: 3, straight: 3 });
+    setAnimState('idle');
+    setAnimStep(0);
+    setPaths([]);
+    setHoverCell(null);
+    setDraggingPipe(null);
+    
+    if (forceResetTimer === true || !isTimedMode) {
+      setTimerRunning(false); 
+    } else if (isTimedMode) {
+      setTimerRunning(true);
+    }
+  };
+
+  const resetPlacement = () => {
+    if (animState === 'animating') return;
+    setGrid(Array(3).fill().map(() => Array(3).fill(null)));
+    setInventory({ cross: 3, straight: 3 });
+    setAnimState('idle');
+    setAnimStep(0);
+    setPaths([]);
+    setHoverCell(null);
+    setDraggingPipe(null);
+    
+    if (isTimedMode && !isWaitingToStart && timeLeft > 0) {
+      setTimerRunning(true);
+    }
+  };
+
+  useEffect(() => {
+    startSession();
+  }, [isTimedMode]); 
+
+  useEffect(() => {
+    if (timerRunning && timeLeft > 0 && animState === 'idle') {
+      const timer = setInterval(() => setTimeLeft(t => t - 1), 1000);
+      return () => clearInterval(timer);
+    } else if (timeLeft <= 0 && animState === 'idle') {
+      setAnimState('timeout');
+      setTimerRunning(false);
+      if (soundEnabled) sfx.timeout();
+    }
+  }, [timerRunning, timeLeft, animState, soundEnabled]);
+
+  const placePipeFromInventory = (r, c, typeToPlace) => {
+    if (isWaitingToStart) return; 
+    const newGrid = [...grid.map(row => [...row])];
+    const newInventory = { ...inventory };
+    let placed = false;
+
+    if (typeToPlace === 'straight' && newInventory.straight > 0 && !newGrid[r][c]) {
+      newGrid[r][c] = 'straight';
+      newInventory.straight--;
+      placed = true;
+    } else if (typeToPlace === 'cross' && newInventory.cross > 0) {
+      if (c < 2 && !newGrid[r][c] && !newGrid[r][c + 1]) {
+        newGrid[r][c] = 'cross_left';
+        newGrid[r][c + 1] = 'cross_right';
+        newInventory.cross--;
+        placed = true;
+      }
+    }
+
+    if (placed) {
+      if (soundEnabled) sfx.place();
+      setGrid(newGrid);
+      setInventory(newInventory);
+    }
+  };
+
+  const movePipeOnGrid = (fromR, fromC, toR, toC, typeToMove) => {
+    if (isWaitingToStart) return;
+    const newGrid = [...grid.map(row => [...row])];
+    
+    if (typeToMove === 'straight') {
+      newGrid[fromR][fromC] = null;
+    } else if (typeToMove === 'cross') {
+      newGrid[fromR][fromC] = null;
+      newGrid[fromR][fromC + 1] = null;
+    }
+
+    let placed = false;
+    if (typeToMove === 'straight' && !newGrid[toR][toC]) {
+      newGrid[toR][toC] = 'straight';
+      placed = true;
+    } else if (typeToMove === 'cross' && toC < 2 && !newGrid[toR][toC] && !newGrid[toR][toC + 1]) {
+      newGrid[toR][toC] = 'cross_left';
+      newGrid[toR][toC + 1] = 'cross_right';
+      placed = true;
+    }
+
+    if (placed) {
+      if (soundEnabled) sfx.place();
+      setGrid(newGrid);
+    }
+  };
+
+  const handleCellClick = (r, c) => {
+    if (animState !== 'idle' || isWaitingToStart) return;
+
+    const currentCell = grid[r][c];
+    if (currentCell) {
+      const newGrid = [...grid.map(row => [...row])];
+      const newInventory = { ...inventory };
+      
+      let pickedType = 'straight';
+      if (currentCell === 'straight') {
+        newGrid[r][c] = null;
+        newInventory.straight++;
+      } else if (currentCell === 'cross_left' || currentCell === 'cross_right') {
+        const leftCol = currentCell === 'cross_left' ? c : c - 1;
+        newGrid[r][leftCol] = null;
+        newGrid[r][leftCol + 1] = null;
+        newInventory.cross++;
+        pickedType = 'cross';
+      }
+      
+      setGrid(newGrid);
+      setInventory(newInventory);
+      setTool(pickedType);
+      if (soundEnabled) sfx.pickup();
+    } else {
+      placePipeFromInventory(r, c, tool);
+    }
+  };
+
+  const handleDragStartGrid = (e, r, c, cellType) => {
+    if (animState !== 'idle' || isWaitingToStart) return e.preventDefault();
+    let type = cellType;
+    let startC = c;
+    if (cellType === 'cross_right') {
+      type = 'cross';
+      startC = c - 1;
+    } else if (cellType === 'cross_left') {
+      type = 'cross';
+    }
+    
+    const dragData = { source: 'grid', type, r, c: startC };
+    e.dataTransfer.setData('dragData', JSON.stringify(dragData));
+    setDraggingPipe(dragData);
+    setTool(type);
+    if (soundEnabled) sfx.pickup();
+  };
+
+  const handleDragStartInv = (e, pipeType) => {
+    if (animState !== 'idle' || isWaitingToStart) return e.preventDefault();
+    const dragData = { source: 'inventory', type: pipeType };
+    e.dataTransfer.setData('dragData', JSON.stringify(dragData));
+    setDraggingPipe(dragData);
+    setTool(pipeType);
+  };
+
+  const handleDragEnd = () => {
+    setDraggingPipe(null);
+    setHoverCell(null);
+  };
+
+  const handleDrop = (e, targetR, targetC) => {
+    e.preventDefault();
+    setHoverCell(null);
+    setDraggingPipe(null);
+    if (isWaitingToStart) return;
+    
+    const dataStr = e.dataTransfer.getData('dragData');
+    if (!dataStr) return;
+    const data = JSON.parse(dataStr);
+
+    if (data.source === 'inventory') {
+      placePipeFromInventory(targetR, targetC, data.type);
+    } else if (data.source === 'grid') {
+      movePipeOnGrid(data.r, data.c, targetR, targetC, data.type);
+    }
+  };
+
+  const handleDragOver = (e, r, c) => {
+    e.preventDefault();
+    if (!isWaitingToStart) setHoverCell({ r, c });
+  };
+
+  const handlePullLever = () => {
+    if (inventory.cross > 0 || inventory.straight > 0) {
+      alert('請把所有水管都放進去喔！');
+      return;
+    }
+
+    setTimerRunning(false);
+
+    const calculatedPaths = [[0], [1], [2]];
+    for (let r = 0; r < 3; r++) {
+      for (let b = 0; b < 3; b++) {
+        let currentC = calculatedPaths[b][r];
+        let nextC = currentC;
+        let cellType = grid[r][currentC];
+
+        if (cellType === 'cross_left') nextC = currentC + 1;
+        else if (cellType === 'cross_right') nextC = currentC - 1;
+        
+        calculatedPaths[b].push(nextC);
+      }
+    }
+
+    setPaths(calculatedPaths);
+    setAnimState('animating');
+    setAnimStep(1);
+    setHoverCell(null);
+    if (soundEnabled) sfx.lever();
+  };
+
+  useEffect(() => {
+    if (animState === 'animating') {
+      if (animStep < 5) {
+        const timer = setTimeout(() => {
+          setAnimStep(s => s + 1);
+        }, 600);
+        return () => clearTimeout(timer);
+      } else {
+        const timer = setTimeout(() => {
+          checkWinCondition();
+        }, 400);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [animState, animStep]);
+
+  const checkWinCondition = () => {
+    let isWin = true;
+    for (let i = 0; i < 3; i++) {
+      if (topBalls[i] !== TARGETS[paths[i][3]]) {
+        isWin = false;
+        break;
+      }
+    }
+    
+    if (isWin) {
+       setAnimState('win');
+       if (isTimedMode) setScore(s => s + 1);
+       if (soundEnabled) sfx.win();
+    } else {
+       setAnimState('lose');
+       if (soundEnabled) sfx.lose();
+    }
+  };
+
+  const getBallPosition = (ballIndex) => {
+    const defaultLeft = 16.66 + ballIndex * 33.33;
+    if (animState === 'idle' || animState === 'timeout') return { 
+      top: '-12%', left: `${defaultLeft}%`, transform: 'translate(-50%, -50%) rotate(0deg)' 
+    };
+
+    const step = Math.min(animStep, 4);
+    let col = ballIndex;
+    
+    if (paths[ballIndex]) {
+      if (step <= 1) col = paths[ballIndex][0];
+      else if (step === 2) col = paths[ballIndex][1];
+      else if (step === 3) col = paths[ballIndex][2];
+      else if (step === 4) col = paths[ballIndex][3];
+    }
+
+    let top = -12;
+    if (step === 1) top = 16.66;
+    else if (step === 2) top = 50;
+    else if (step === 3) top = 83.33;
+    else if (step === 4) top = 110; 
+
+    const rotation = step * 270;
+
+    return {
+      top: `${top}%`,
+      left: `${16.66 + col * 33.33}%`,
+      transform: `translate(-50%, -50%) rotate(${rotation}deg)`,
+      transition: animStep > 0 ? 'all 0.6s cubic-bezier(0.34, 1.56, 0.64, 1)' : 'none'
+    };
+  };
+
+  const isDraggingOrHasInventory = (t) => inventory[t] > 0 || (draggingPipe && draggingPipe.type === t);
+
+  return (
+    <div className="w-screen h-[100dvh] bg-sky-100 flex items-center justify-center p-0 sm:p-2 md:p-4 lg:p-6 font-sans select-none overflow-hidden">
+      
+      <div className="w-full h-full max-w-6xl bg-white sm:rounded-[2.5rem] sm:shadow-2xl flex flex-col md:flex-row overflow-hidden border-0 sm:border-4 border-sky-200">
+        
+        {/* ================= 左半部：遊戲盤面區 ================= */}
+        <div className="flex-1 flex flex-col items-center justify-center p-2 sm:p-4 bg-sky-50/50 min-h-0 relative z-0">
+          
+          <div className="flex w-full items-center justify-center min-h-0">
+            {/* 修正：進一步調降 vh 上限(最高 60vh)，並將上方預留空間 (mt) 加大到 22%，完美包容浮空的彩球 */}
+            <div 
+              className="w-full max-w-[min(80vw,42vh)] md:max-w-[min(85%,54vh)] lg:max-w-[min(100%,60vh)] aspect-square relative bg-sky-100/50 rounded-2xl md:rounded-3xl p-3 sm:p-4 border-4 border-sky-300 shadow-inner mt-[22%] mb-[16%] shrink-0"
+              onMouseLeave={() => setHoverCell(null)}
+            >
+              {isWaitingToStart && (
+                <div className="absolute inset-0 z-50 flex flex-col items-center justify-center bg-sky-900/40 backdrop-blur-[2px] rounded-xl p-2 md:p-4 text-center">
+                   <button 
+                      onClick={() => setTimerRunning(true)} 
+                      className="py-3 w-full max-w-[180px] md:max-w-[220px] bg-gradient-to-b from-yellow-300 to-yellow-400 text-yellow-900 border-b-[4px] md:border-b-[6px] border-yellow-500 rounded-2xl font-black text-xl md:text-2xl hover:brightness-105 active:translate-y-1 active:border-b-0 shadow-xl transition-all animate-bounce"
+                   >
+                      ▶️ 開始挑戰
+                   </button>
+                   <p className="mt-4 text-white text-xs md:text-sm font-bold drop-shadow-md bg-black/30 px-3 py-1.5 rounded-full shadow-inner">開始後將揭曉顏色並倒數！</p>
+                </div>
+              )}
+
+              <div className="absolute inset-0 p-3 sm:p-4 flex justify-around pointer-events-none opacity-30">
+                <div className="w-[4%] md:w-[3%] h-full bg-sky-300 rounded-full"></div>
+                <div className="w-[4%] md:w-[3%] h-full bg-sky-300 rounded-full"></div>
+                <div className="w-[4%] md:w-[3%] h-full bg-sky-300 rounded-full"></div>
+              </div>
+
+              {topBalls.map((color, idx) => {
+                const isHidden = isWaitingToStart;
+                return (
+                  <div
+                    key={`ball-${idx}`}
+                    className={`absolute w-[16%] aspect-square rounded-full z-30 flex items-center justify-center overflow-hidden transition-colors duration-300
+                      ${isHidden ? 'bg-slate-300 border-[3px] md:border-4 border-slate-400 shadow-[inset_0_4px_10px_rgba(0,0,0,0.1)]' : `bg-gradient-to-br ${COLORS[color].bg} shadow-lg ${COLORS[color].shadow} border-[3px] md:border-4 ${COLORS[color].border}`}`}
+                    style={{ ...getBallPosition(idx) }}
+                  >
+                    {isHidden ? (
+                      <span className="text-xl md:text-2xl font-black text-slate-500/60 drop-shadow-sm">?</span>
+                    ) : (
+                      <>
+                        <div className="absolute top-[10%] left-[20%] w-[25%] h-[25%] bg-white/70 rounded-full"></div>
+                        <div className="w-[40%] h-[40%] bg-black/10 rounded-full flex items-center justify-center">
+                           <div className="w-[40%] h-[40%] bg-white/50 rounded-full"></div>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+
+              <div className="relative w-full h-full z-10 flex flex-col">
+                {grid.map((row, rIdx) => (
+                  <div key={rIdx} className="flex-1 flex relative">
+                    {row.map((cell, cIdx) => {
+                      const isHovered = hoverCell?.r === rIdx && hoverCell?.c === cIdx && animState === 'idle' && !isWaitingToStart;
+                      const canPlaceCross = cIdx < 2 && grid[rIdx][cIdx + 1] === null;
+                      const isBeingDraggedOut = draggingPipe?.source === 'grid' && 
+                        ( (draggingPipe.type === 'straight' && draggingPipe.r === rIdx && draggingPipe.c === cIdx) || 
+                          (draggingPipe.type === 'cross' && draggingPipe.r === rIdx && (draggingPipe.c === cIdx || draggingPipe.c + 1 === cIdx)) );
+
+                      return (
+                        <div
+                          key={`${rIdx}-${cIdx}`}
+                          className={`flex-1 relative transition-colors border-2 border-dashed rounded-[0.5rem] md:rounded-xl m-[2px] 
+                            ${isWaitingToStart ? 'cursor-not-allowed border-sky-300/30' : 'cursor-pointer border-sky-300/40 hover:bg-sky-100/50'}
+                            ${isHovered ? 'bg-sky-200/50 border-sky-400' : ''}`}
+                          
+                          onClick={() => handleCellClick(rIdx, cIdx)}
+                          draggable={cell !== null && animState === 'idle' && !isWaitingToStart}
+                          onDragStart={(e) => handleDragStartGrid(e, rIdx, cIdx, cell)}
+                          onDragEnd={handleDragEnd}
+                          
+                          onDragOver={(e) => handleDragOver(e, rIdx, cIdx)}
+                          onDrop={(e) => handleDrop(e, rIdx, cIdx)}
+                          onDragEnter={(e) => e.preventDefault()}
+                        >
+                          {!isBeingDraggedOut && cell === 'straight' && (
+                            <div className="absolute inset-0 flex justify-center pointer-events-none animate-in zoom-in-75 duration-200">
+                              <StraightPipe />
+                            </div>
+                          )}
+                          {!isBeingDraggedOut && cell === 'cross_left' && (
+                            <div className="absolute top-0 left-0 w-full h-full animate-in zoom-in-75 duration-200">
+                               <CrossPipe />
+                            </div>
+                          )}
+
+                          {isHovered && cell === null && tool === 'straight' && isDraggingOrHasInventory('straight') && (
+                            <div className="absolute inset-0 flex justify-center pointer-events-none opacity-40 scale-90">
+                              <StraightPipe />
+                            </div>
+                          )}
+                          {isHovered && cell === null && tool === 'cross' && canPlaceCross && isDraggingOrHasInventory('cross') && (
+                            <div className="absolute top-0 left-0 w-full h-full pointer-events-none opacity-40 scale-90 z-20">
+                              <CrossPipe />
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                ))}
+              </div>
+
+              <div className="absolute bottom-[-14%] left-0 w-full h-[14%] flex justify-around px-[4%] z-40 pointer-events-none">
+                {TARGETS.map((color, idx) => (
+                  <div key={`target-${idx}`} className={`w-[20%] h-full ${COLORS[color].solid} rounded-b-[1rem] md:rounded-b-3xl shadow-lg border-[3px] md:border-4 border-t-0 border-white relative overflow-hidden flex items-start justify-center pt-1 md:pt-2`}>
+                    <div className="w-[60%] h-[20%] bg-black/20 rounded-full"></div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ================= 右半部：操作控制區 ================= */}
+        <div className="w-full md:w-[280px] lg:w-[320px] bg-slate-50 border-t-4 md:border-t-0 md:border-l-4 border-slate-200 p-3 sm:p-4 md:p-6 flex flex-col shrink-0 z-10 justify-between min-h-0">
+          
+          <div className="flex flex-col gap-2 md:gap-4 min-h-0">
+            
+            <div className="text-center w-full pb-2 md:pb-3 border-b-2 border-slate-200/50 shrink-0">
+              <h1 className="text-2xl lg:text-3xl font-black mb-0 leading-tight">
+                <span className="text-transparent bg-clip-text bg-gradient-to-r from-sky-500 to-indigo-500 py-1 px-1 block drop-shadow-sm">
+                  🌈 彩球水管工
+                </span>
+              </h1>
+              <p className="text-[10px] md:text-xs font-bold text-sky-400 mt-1">幫彩球們蓋水管回到家</p>
+            </div>
+
+            <div className="flex justify-between items-center shrink-0">
+              <div className="flex gap-1.5 md:gap-2">
+                <button 
+                  onClick={() => setIsTimedMode(!isTimedMode)}
+                  className="text-xs md:text-sm font-bold bg-white border-2 border-slate-200 text-slate-600 px-2 py-1 md:px-3 md:py-2 rounded-xl hover:bg-slate-100 transition-colors flex items-center gap-1 shadow-sm"
+                >
+                  {isTimedMode ? '⏱️ 計時' : '☕ 休閒'}
+                </button>
+                <button
+                  onClick={() => setShowSettings(true)}
+                  className="w-8 h-8 md:w-10 md:h-10 flex items-center justify-center bg-white border-2 border-slate-200 text-slate-600 rounded-xl hover:bg-slate-100 transition-colors shadow-sm text-sm md:text-lg"
+                >
+                  ⚙️
+                </button>
+              </div>
+
+              {isTimedMode && (
+                <div className="flex gap-1 md:gap-2 shrink-0">
+                  <div className={`font-black text-xs md:text-sm px-2 py-1 md:py-1.5 rounded-xl shadow-inner flex items-center ${timeLeft <= 10 ? 'text-red-500 animate-pulse bg-red-100' : 'text-sky-600 bg-sky-100'}`}>
+                    ⏳ {timeLeft}s
+                  </div>
+                  <div className="font-black text-xs md:text-sm px-2 py-1 md:py-1.5 rounded-xl shadow-inner flex items-center text-indigo-600 bg-indigo-100" title="目前得分">
+                    🏆 {score}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <p className="hidden sm:block text-center text-xs text-slate-500 font-bold bg-white py-1.5 rounded-xl border-2 border-slate-100 shadow-sm shrink-0">
+              💡 提示：點擊水管可收回或拖曳移動
+            </p>
+
+            <div className="flex justify-center gap-2 md:gap-3 shrink-0">
+              <div
+                draggable={inventory.cross > 0 && animState === 'idle' && !isWaitingToStart}
+                onDragStart={(e) => handleDragStartInv(e, 'cross')}
+                onDragEnd={handleDragEnd}
+                onClick={() => setTool('cross')}
+                className={`flex flex-col items-center p-2 md:p-3 flex-1 rounded-xl md:rounded-2xl transition-all border-b-4 cursor-grab active:cursor-grabbing
+                  ${tool === 'cross' ? 'bg-sky-100 border-sky-400 ring-[3px] md:ring-4 ring-sky-200 scale-[1.02]' : 'bg-white border-slate-200 hover:bg-slate-50 shadow-sm'}
+                  ${inventory.cross === 0 || isWaitingToStart ? 'opacity-50 grayscale cursor-not-allowed border-b-2' : ''}`}
+              >
+                <div className="w-8 h-8 md:w-12 md:h-12 relative mb-1 drop-shadow-sm flex justify-center items-center pointer-events-none">
+                   <svg width="80%" height="80%" viewBox="0 0 100 100">
+                      <path d="M 80 10 C 80 50, 20 50, 20 90" fill="none" stroke="#f97316" strokeWidth="16" strokeLinecap="square" />
+                      <path d="M 20 10 C 20 50, 80 50, 80 90" fill="none" stroke="#ec4899" strokeWidth="16" strokeLinecap="square" />
+                   </svg>
+                </div>
+                <span className="text-xs md:text-sm font-black text-slate-700 pointer-events-none">交叉水管</span>
+                <span className="text-[10px] md:text-xs font-bold text-sky-600 bg-sky-200/50 px-2 py-0.5 md:py-1 rounded-full mt-1 pointer-events-none">剩 {inventory.cross}</span>
+              </div>
+
+              <div
+                draggable={inventory.straight > 0 && animState === 'idle' && !isWaitingToStart}
+                onDragStart={(e) => handleDragStartInv(e, 'straight')}
+                onDragEnd={handleDragEnd}
+                onClick={() => setTool('straight')}
+                className={`flex flex-col items-center p-2 md:p-3 flex-1 rounded-xl md:rounded-2xl transition-all border-b-4 cursor-grab active:cursor-grabbing
+                  ${tool === 'straight' ? 'bg-sky-100 border-sky-400 ring-[3px] md:ring-4 ring-sky-200 scale-[1.02]' : 'bg-white border-slate-200 hover:bg-slate-50 shadow-sm'}
+                  ${inventory.straight === 0 || isWaitingToStart ? 'opacity-50 grayscale cursor-not-allowed border-b-2' : ''}`}
+              >
+                <div className="w-8 h-8 md:w-12 md:h-12 relative mb-1 drop-shadow-sm flex justify-center pointer-events-none">
+                  <svg width="40%" height="100%" viewBox="0 0 40 100">
+                     <rect x="5" y="10" width="30" height="80" fill="#0ea5e9" rx="4" />
+                  </svg>
+                </div>
+                <span className="text-xs md:text-sm font-black text-slate-700 pointer-events-none">直向水管</span>
+                <span className="text-[10px] md:text-xs font-bold text-sky-600 bg-sky-200/50 px-2 py-0.5 md:py-1 rounded-full mt-1 pointer-events-none">剩 {inventory.straight}</span>
+              </div>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-2 shrink-0 mt-2 md:mt-0">
+            <button
+              onClick={handlePullLever}
+              disabled={animState !== 'idle' || isWaitingToStart || (inventory.cross > 0 || inventory.straight > 0)}
+              className={`w-full py-3 md:py-4 rounded-xl md:rounded-2xl font-black text-lg md:text-xl transition-all shadow-xl
+                ${animState !== 'idle' || isWaitingToStart || (inventory.cross > 0 || inventory.straight > 0)
+                  ? 'bg-slate-200 text-slate-400 border-b-4 border-slate-300 cursor-not-allowed shadow-none' 
+                  : 'bg-gradient-to-b from-yellow-300 to-yellow-400 text-yellow-900 border-b-[4px] md:border-b-[6px] border-yellow-500 hover:brightness-105 active:translate-y-1 md:active:translate-y-2 active:border-b-0 active:shadow-sm'
+                }`}
+            >
+              {animState === 'animating' ? '溜滑梯中...' : '開水閘門！'}
+            </button>
+            
+            <div className="flex gap-2 w-full">
+              <button
+                onClick={resetPlacement}
+                disabled={animState === 'animating' || isWaitingToStart}
+                className={`flex-1 py-2 md:py-3 rounded-xl font-black text-xs md:text-sm text-sky-600 bg-white border-2 transition-all 
+                  ${animState === 'animating' || isWaitingToStart ? 'border-slate-200 text-slate-400 cursor-not-allowed opacity-70' : 'border-slate-200 hover:bg-slate-100 active:bg-slate-200'}`}
+              >
+                🧹 重新配置
+              </button>
+              <button
+                onClick={startSession}
+                disabled={animState === 'animating'}
+                className={`flex-1 py-2 md:py-3 rounded-xl font-black text-xs md:text-sm text-sky-600 bg-white border-2 transition-all 
+                  ${animState === 'animating' ? 'border-slate-200 text-slate-400 cursor-not-allowed opacity-70' : 'border-slate-200 hover:bg-slate-100 active:bg-slate-200'}`}
+              >
+                🔄 更換題目
+              </button>
+            </div>
+
+            <div className="text-center text-[10px] md:text-xs text-slate-400 font-bold mt-1">
+              由特工365製作
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {(animState === 'win' || animState === 'lose' || animState === 'timeout') && (
+        <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[60] animate-in fade-in p-4">
+          <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-2xl text-center max-w-sm w-full border-8 border-sky-100 transform scale-100 animate-in zoom-in-90 bounce">
+            {animState === 'win' && (
+              <>
+                <div className="text-5xl md:text-6xl mb-4">🎉</div>
+                <h2 className="text-3xl md:text-4xl font-black text-sky-500 mb-4">太棒了！</h2>
+                {isTimedMode ? (
+                  <p className="text-slate-500 font-bold mb-6 md:mb-8 text-base md:text-lg">目前得分：<span className="text-sky-500 text-xl md:text-2xl">{score}</span><br/>繼續挑戰下一關！</p>
+                ) : (
+                  <p className="text-slate-500 font-bold mb-6 md:mb-8 text-base md:text-lg">彩球都順利溜到正確的家囉！</p>
+                )}
+                <button onClick={() => generateLevel(false)} className="w-full py-3 md:py-4 bg-sky-400 hover:bg-sky-500 text-white text-lg md:text-xl font-black rounded-xl md:rounded-2xl shadow-lg border-b-4 border-sky-600 active:translate-y-1 active:border-b-0 transition-all">
+                  挑戰下一關
+                </button>
+              </>
+            )}
+            {animState === 'lose' && (
+              <>
+                <div className="text-5xl md:text-6xl mb-4">🤔</div>
+                <h2 className="text-3xl md:text-4xl font-black text-pink-500 mb-4">哎呀！</h2>
+                <p className="text-slate-500 font-bold mb-6 md:mb-8 text-base md:text-lg">有球球跑錯家了，重新調整水管吧！</p>
+                <button onClick={() => { 
+                  setAnimState('idle'); 
+                  if (isTimedMode) setTimerRunning(true);
+                }} className="w-full py-3 md:py-4 bg-pink-400 hover:bg-pink-500 text-white text-lg md:text-xl font-black rounded-xl md:rounded-2xl shadow-lg border-b-4 border-pink-600 active:translate-y-1 active:border-b-0 transition-all">
+                  修改水管
+                </button>
+              </>
+            )}
+            {animState === 'timeout' && (
+              <>
+                <div className="text-5xl md:text-6xl mb-4">⏰</div>
+                <h2 className="text-3xl md:text-4xl font-black text-red-500 mb-4">時間到！</h2>
+                <p className="text-slate-500 font-bold mb-6 md:mb-8 text-lg md:text-xl">
+                  恭喜你成功破了 <span className="text-sky-500 text-2xl md:text-3xl">{score}</span> 關！
+                </p>
+                <button onClick={startSession} className="w-full py-3 md:py-4 bg-red-400 hover:bg-red-500 text-white text-lg md:text-xl font-black rounded-xl md:rounded-2xl shadow-lg border-b-4 border-red-600 active:translate-y-1 active:border-b-0 transition-all">
+                  再來一局
+                </button>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {showSettings && (
+        <div className="absolute inset-0 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center z-[70] animate-in fade-in p-4">
+          <div className="bg-white p-6 md:p-8 rounded-[2rem] shadow-2xl w-full max-w-sm border-8 border-sky-100 transform scale-100 animate-in zoom-in-90 relative">
+            <button 
+               onClick={() => {
+                 let finalTime = timeSetting;
+                 if (finalTime < 10) finalTime = 10;
+                 if (finalTime > 999) finalTime = 999;
+                 setTimeSetting(finalTime);
+                 setShowSettings(false);
+                 if (!timerRunning && animState === 'idle') setTimeLeft(finalTime);
+               }} 
+               className="absolute top-4 right-4 w-10 h-10 bg-slate-100 rounded-full font-black text-slate-500 hover:bg-slate-200 transition-colors flex items-center justify-center"
+            >✕</button>
+
+            <h2 className="text-xl md:text-2xl font-black text-sky-600 mb-4 md:mb-6 flex items-center justify-center gap-2 mt-2">
+              ⚙️ 遊戲設定
+            </h2>
+            
+            <div className="mb-4 md:mb-6">
+              <label className="block text-slate-500 font-bold mb-2 md:mb-3 text-left text-sm md:text-base">計時賽時間 (秒)</label>
+              <div className="flex gap-2 mb-2">
+                <input
+                  type="number"
+                  min="10"
+                  max="999"
+                  value={timeSetting}
+                  onChange={(e) => setTimeSetting(parseInt(e.target.value) || 0)}
+                  className="flex-[1.2] py-2 md:py-3 px-2 rounded-xl font-black border-2 border-slate-200 text-sky-600 text-center text-base md:text-lg focus:border-sky-400 focus:outline-none focus:ring-4 focus:ring-sky-100 transition-all"
+                  placeholder="自訂"
+                />
+                <div className="flex gap-1 md:gap-2 flex-[2]">
+                  {[30, 60, 90].map(t => (
+                    <button
+                      key={t}
+                      onClick={() => setTimeSetting(t)}
+                      className={`flex-1 py-2 md:py-3 rounded-xl font-bold transition-all border-2 text-sm md:text-base
+                        ${timeSetting === t ? 'bg-sky-400 text-white border-sky-400 shadow-md scale-105' : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      {t}s
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-6 md:mb-8">
+              <label className="block text-slate-500 font-bold mb-2 md:mb-3 text-left text-sm md:text-base">音效開關</label>
+              <button
+                onClick={() => setSoundEnabled(!soundEnabled)}
+                className={`w-full py-3 md:py-4 rounded-xl font-bold transition-all flex justify-center items-center gap-2 text-base md:text-lg border-b-4
+                  ${soundEnabled 
+                    ? 'bg-green-400 text-white border-green-500 active:translate-y-1 active:border-b-0 shadow-md' 
+                    : 'bg-slate-200 text-slate-500 border-slate-300 active:translate-y-1 active:border-b-0'}`}
+              >
+                {soundEnabled ? '🔊 遊戲音效：開啟' : '🔇 遊戲音效：關閉'}
+              </button>
+            </div>
+
+            <button 
+              onClick={() => {
+                let finalTime = timeSetting;
+                if (finalTime < 10) finalTime = 10;
+                if (finalTime > 999) finalTime = 999;
+                setTimeSetting(finalTime);
+                setShowSettings(false);
+                if (!timerRunning && animState === 'idle') setTimeLeft(finalTime);
+              }} 
+              className="w-full py-3 md:py-4 bg-sky-500 hover:bg-sky-600 text-white text-lg md:text-xl font-black rounded-xl md:rounded-2xl shadow-lg border-b-4 border-sky-700 active:translate-y-1 active:border-b-0 transition-all"
+            >
+              儲存並返回
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
